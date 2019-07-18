@@ -1,0 +1,293 @@
+// Standard includes
+#include <stdio.h>
+#include <string.h>
+#include <thread>
+#include <ctime>
+
+// ZED include
+#include <sl/Camera.hpp>
+
+// OpenCV include (for display)
+#include <opencv2/opencv.hpp>
+
+// Using std and sl namespaces
+using namespace std;
+using namespace sl;
+
+char l_image_name[40];
+char r_image_name[40];
+char depth_name[40];
+int action = 5;
+
+Camera zed;
+
+void saveLeftIm()
+{
+  Mat zed_image;
+  zed.retrieveImage(zed_image, VIEW_LEFT);
+  zed_image.write(l_image_name);
+
+  //cv::imwrite(image_name, cv::Mat((int) zed_image.getHeight(), (int) zed_image.getWidth(), CV_8UC4, zed_image.getPtr<sl::uchar1>(sl::MEM_CPU)));
+  //printf("Saved left image\n");
+}
+
+void saveRightIm()
+{
+  Mat zed_image;
+  zed.retrieveImage(zed_image, VIEW_RIGHT);
+  zed_image.write(r_image_name);
+}
+
+void saveDepthIm()
+{
+  saveDepthAs(zed, DEPTH_FORMAT_PNG, depth_name);
+  //printf("Saved depth image\n");
+}
+
+cv::Mat slMat2cvMat(Mat& input) {
+  // Mapping between MAT_TYPE and CV_TYPE
+  int cv_type = -1;
+  switch (input.getDataType()) {
+  case MAT_TYPE_32F_C1: cv_type = CV_32FC1; break;
+  case MAT_TYPE_32F_C2: cv_type = CV_32FC2; break;
+  case MAT_TYPE_32F_C3: cv_type = CV_32FC3; break;
+  case MAT_TYPE_32F_C4: cv_type = CV_32FC4; break;
+  case MAT_TYPE_8U_C1: cv_type = CV_8UC1; break;
+  case MAT_TYPE_8U_C2: cv_type = CV_8UC2; break;
+  case MAT_TYPE_8U_C3: cv_type = CV_8UC3; break;
+  case MAT_TYPE_8U_C4: cv_type = CV_8UC4; break;
+
+    /*
+    
+  case MAT_TYPE_32F_C1: cv_type = CV_32FC1; printf("32_1\n"); break;
+  case MAT_TYPE_32F_C2: cv_type = CV_32FC2; printf("32_2\n");break;
+  case MAT_TYPE_32F_C3: cv_type = CV_32FC3; printf("32_3\n");break;
+  case MAT_TYPE_32F_C4: cv_type = CV_32FC4; printf("32_4\n");break;
+  case MAT_TYPE_8U_C1: cv_type = CV_8UC1; printf("8_1\n");break;
+  case MAT_TYPE_8U_C2: cv_type = CV_8UC2; printf("8_2\n");break;
+  case MAT_TYPE_8U_C3: cv_type = CV_8UC3; printf("8_3\n");break;
+  case MAT_TYPE_8U_C4: cv_type = CV_8UC4; printf("8_4\n");break;
+
+    */
+
+  default: break;
+  }
+
+  // Since cv::Mat data requires a uchar* pointer, we get the uchar1 pointer from sl::Mat (getPtr<T>())
+  // cv::Mat and sl::Mat will share a single memory structure
+  return cv::Mat(input.getHeight(), input.getWidth(), cv_type, input.getPtr<sl::uchar1>(MEM_CPU));	//MEM_CPU??
+}
+
+int height = 376, width = 672; 
+int hardTurnWidth = 200, softTurnWidth = 50, forwardWidth = 300;
+
+//  hard turn left,  soft turn left, forward, soft turn right, hard turn right
+
+/*
+
+// For camera placed 90 deg rotated
+
+cv::Rect regions[5] = {
+  cv::Rect(0, 0, width, hardTurnWidth),
+  cv::Rect(0, 0, width, softTurnWidth),
+  cv::Rect(0, (height - forwardWidth)/2 , width, forwardWidth),
+  cv::Rect(0, height - softTurnWidth, width, softTurnWidth),
+  cv::Rect(0, height - hardTurnWidth, width, hardTurnWidth),
+};
+
+*/
+
+// For camera placed normally
+
+cv::Rect regions[5] = {
+  cv::Rect(0, 0, hardTurnWidth, height),
+  cv::Rect(0, 0, softTurnWidth, height),
+  cv::Rect((width - forwardWidth)/2, 0, forwardWidth, height),
+  cv::Rect(width - softTurnWidth, 0, softTurnWidth, height),
+  cv::Rect(width - hardTurnWidth, 0, hardTurnWidth, height),
+};
+
+
+int nonZero[5];
+float sums[5];
+int turnDirFlag = 1; // 0: left, 1: flag not set, 2: right
+int turnFlag = 0;
+/*
+float hardTurnHist[2] = {0.0f, 0.0f};
+float decayCoeff = 0.09;
+*/
+
+void speechCommand()
+{
+  switch (action){
+    case 0 :   system("espeak -v en 'TURN LEFT' "); break;
+    case 1 :   system("espeak -v en 'MOVE LEFT' "); break;
+    case 2 :   system("espeak -v en 'STRAIGHT' "); break;
+    case 3 :   system("espeak -v en 'MOVE RIGHT' "); break;
+    case 4 :   system("espeak -v en 'TURN RIGHT' "); break;
+    default : break;
+  }
+}
+
+float softTurnThresh = 800.0f, stopStraightThresh = 1000.0f, turnDetermineThresh = 2000.0f, straightThresh = 3200.0f;
+
+int determineAction(cv::Mat depthIm) // 0: hard left, 1:soft left, 2:straight, 3:soft right, 4:hard right
+{  
+  for (int i = 0; i < 5; i++)
+    {
+      nonZero[i] = cv::countNonZero(depthIm(regions[i]));
+      if (nonZero[i] == 0)
+	sums[i] = 0.0f;
+      else
+	sums[i] = float(cv::sum(depthIm(regions[i]))[0]) / float(nonZero[i]);
+    }
+
+  //  printf("%d \t %d \t %d \t %d \t %d \n", nonZero[0], nonZero[1], nonZero[2], nonZero[3], nonZero[4]);
+  printf("%.3f \t %.3f \t %.3f \t %.3f \t %.3f \t\t", sums[0], sums[1], sums[2], sums[3], sums[4]);
+
+  if (turnFlag == 1) // Still trying to turn
+    {
+      if ( sums[2] > straightThresh )
+	{
+	  turnFlag = 0;
+	  turnDirFlag = 1;
+	  return 2;
+	}
+      else if ( turnDirFlag == 0 ) //still turning left
+	return 0;
+      else if (turnDirFlag == 2 )
+	return 4;
+    }
+  else if (turnFlag == 0) // Not at turning state
+    {
+      if ( abs(sums[1] - sums[3]) > softTurnThresh && sums[3] > stopStraightThresh) // not centered & forward motion still possible
+	{
+	  if (sums[1] > sums[3])
+	    return 1;
+	  else
+	    return 3;
+	}
+      else if (turnDirFlag == 1 & sums[2] < turnDetermineThresh && sums[2] > stopStraightThresh) // centered, turn flag not set, and near a turn 
+	{
+	  if ( sums[0] > sums[4] ) // Left turn feasible
+	    turnDirFlag = 0;
+	  else
+	    turnDirFlag = 2;
+	}
+      else if (sums[2] > stopStraightThresh) // Possible to move forward
+	return 2;
+      else
+	{
+	  turnFlag = 1;
+	  if ( turnDirFlag == 0 ) // s
+	    return 0;
+	  else if (turnDirFlag == 2 )
+	    return 4;
+	}
+    }
+}
+
+std::thread depthThread, leftImThread, rightImThread, speechThread;
+
+int main(int argc, char **argv) {
+
+  InitParameters initParameters;
+  if (argc == 2) initParameters.svo_input_filename = argv[1];
+  initParameters.camera_resolution = RESOLUTION_VGA; //672x376
+  initParameters.camera_fps = 30;
+  initParameters.depth_mode = DEPTH_MODE_QUALITY;
+  
+    
+  //  Open the camera
+  ERROR_CODE err = zed.open(initParameters);
+  if (err != SUCCESS) {
+    cout << toString(err) << endl;
+    zed.close();
+    return 1; // Quit if an error occurred
+  }
+
+  zed.setDepthMaxRangeValue(40000);
+  // Grab depth in FILL mode
+  RuntimeParameters runtime_parameters; 
+  runtime_parameters.sensing_mode = SENSING_MODE_FILL;
+
+  int imcount = 0;
+
+  //cv::namedWindow("Depth", cv::WINDOW_AUTOSIZE);
+ 
+  clock_t begin = clock();
+  double commandDur = 2.0f;
+
+  while (1) {
+	clock_t begin = clock();  
+  // Check that grab() is successful
+    if (zed.grab(runtime_parameters) == SUCCESS) {
+
+      sprintf(l_image_name, "../data/l_image/l_image-%d.jpg", imcount);
+      sprintf(r_image_name, "../data/r_image/r_image-%d.jpg", imcount);
+      sprintf(depth_name, "../data/depth/depth-%d.png", imcount);
+
+	
+	/*
+      sl::Mat depthImage(width, height, MAT_TYPE_32F_C1, MEM_CPU);
+      zed.retrieveMeasure(depthImage, MEASURE_DEPTH, MEM_CPU, 0, 0);
+      //memcpy(depth_cv.data,depthImage.data,width*height*4*sizeof(uchar));
+      cv::Mat depth_cv = slMat2cvMat(depthImage);
+
+      double max;
+      cv::minMaxLoc(depth_cv, NULL, &max, NULL, NULL);
+      printf("Max: %.4f\n", max);    
+
+      /*      
+      // Commands to save cv image as 16 bit (not essential)
+      cv::Mat depth_save;
+      depth_cv.convertTo(depth_save, CV_16U);
+      cv::imwrite("testwrite.png", depth_save);
+    */
+
+	
+	// Commands to display image
+      
+    /*  cv::imshow("Depth", depth_cv/40000.0f);
+      cv::waitKey(1);
+
+      
+      int lastAction = action;
+      action = determineAction(depth_cv);
+
+      double time = double(clock() - begin) / CLOCKS_PER_SEC;
+
+      if (lastAction != action || time > commandDur){
+		speechCommand();
+		printf("SPEECHCOMMAND CALLED");
+        begin = clock();
+      }
+
+      printf("Time since: %.2f \t Action: %d \n", time, action);
+
+
+	*/
+      
+       
+	std::thread leftImThread(saveLeftIm);
+	std::thread rightImThread(saveRightIm);
+	std::thread depthThread(saveDepthIm);
+
+	leftImThread.join();
+	rightImThread.join();
+	depthThread.join();
+
+	++imcount;
+
+    double time_t;
+    time_t = double(clock() - begin) / CLOCKS_PER_SEC; 
+    cout << "TIME: " << time_t << endl;
+	
+    }
+  }
+
+  // Exit
+  zed.close();
+  return EXIT_SUCCESS;
+}
+
