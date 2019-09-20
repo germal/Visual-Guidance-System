@@ -46,7 +46,7 @@ Put the rtabmap_ros && visguide package in your ros workspace and run "catkin_ma
 >cmake ..
 >make
 
-###Usage
+### Usage
 
 1. Activate your virtual env
 > source /path to virtual env/bin/activate
@@ -73,7 +73,7 @@ Step 2
 
 Note: point_cloud topic - /rtabmap/map_cloud
 
-###Corridor_Dataset
+### Corridor_Dataset
 - visguide/data.svo
 - visguide/data_30fps.svo
 
@@ -81,7 +81,7 @@ Note: point_cloud topic - /rtabmap/map_cloud
 >cd zed_code/build
 >./ZED_Save_depth ../data/data.svo
 
-###Training
+### Training
 >python train.py --gpus 0 --arch_encoder resnet18dilated --arch_decoder c1_deepsup --fc_dim 512 
 --list_train data/train.odgt --list_val data/train.odgt --num_class 12 
 --weights_encoder baseline-resnet18dilated-c1_deepsup/encoder_epoch_20.pth 
